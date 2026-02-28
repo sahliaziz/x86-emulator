@@ -1,58 +1,82 @@
 from capstone import *
 from capstone.x86 import *
 from elftools.elf.elffile import ELFFile
+from elftools.elf.sections import SymbolTableSection
 
-"""
-with open("fib.bin", "rb") as f:
-    CODE = f.read()
+# -----------------------
+# Reading ELF file
+# -----------------------
 
-md = Cs(CS_ARCH_X86, CS_MODE_64)
-for i in md.disasm(CODE, 0x401000):
-    print("0x%x:\t%s\t%s" %(i.address, i.mnemonic, i.op_str))
-"""
+with open("add2.bin", "rb") as f:
+    elffile = ELFFile(f)
+    text_section = elffile.get_section_by_name(".text")
+    symtable_section = elffile.get_section_by_name(".symtab")
+    code_bytes = text_section.data()
+
+    start = symtable_section.get_symbol_by_name("_start")[0]
+    start_address = start["st_value"]
+    vma_address = text_section["sh_addr"]
+
+
+code_length = len(code_bytes)
+
+# -----------------------
+# Memory + Registers
+# -----------------------
 
 memory = bytearray(64)
 
 flags = {
-    'ZF': 0,  # Zero Flag
-    'SF': 0,  # Sign Flag
-    'OF': 0,  # Overflow Flag
-    'CF': 0,  # Carry Flag
-    'PF': 0,  # Parity Flag
-    'AF': 0,  # Auxiliary Carry Flag
+    "ZF": 0,
+    "SF": 0,
 }
 
 registers = {
-    X86_REG_RSP : 64,
-    X86_REG_RBP : 64,
-    X86_REG_RIP : 0,
-    X86_REG_EAX : 0,
-    X86_REG_EBX : 0,
-    X86_REG_RAX : 0,
-    X86_REG_EDX : 0,
-    X86_REG_RDI : 0,
-    X86_REG_RDX : 0,
+    X86_REG_RSP: len(memory),
+    X86_REG_RBP: len(memory),
+    X86_REG_RIP: start_address
+    - vma_address,  # OFFSET inside .text (NOT virtual address)
+    X86_REG_RAX: 0,
+    X86_REG_RBX: 0,
+    X86_REG_RCX: 0,
+    X86_REG_RDX: 0,
+    X86_REG_RDI: 0,
+    X86_REG_RSI: 0,
 }
 
-n_jumps = 0
+# -----------------------
+# Load ELF
+# -----------------------
 
-with open("fib.bin", 'rb') as f:
-        # Load the ELF file
-        elffile = ELFFile(f)
-        
-        text_section = elffile.get_section_by_name('.text')
-        if not text_section:
-            print("Could not find .text section.")
-
-        code_bytes = text_section.data()
-        vma_address = text_section['sh_addr']
 
 md = Cs(CS_ARCH_X86, CS_MODE_64)
-
 md.detail = True
-md.skipdata = True
 
-code_length = len(code_bytes)
+# -----------------------
+# Helpers
+# -----------------------
+
+
+def read_mem(addr, size):
+    if addr < 0 or addr + size > len(memory):
+        raise Exception(f"Invalid memory read at {addr}")
+    return int.from_bytes(memory[addr : addr + size], "little")
+
+
+def write_mem(addr, value, size):
+    if addr < 0 or addr + size > len(memory):
+        raise Exception(f"Invalid memory write at {addr}")
+    memory[addr : addr + size] = value.to_bytes(size, "little")
+
+
+def compute_mem_address(mem_op):
+    addr = 0
+    if mem_op.base != 0:
+        addr += registers.get(mem_op.base, 0)
+    if mem_op.index != 0:
+        addr += registers.get(mem_op.index, 0) * mem_op.scale
+    addr += mem_op.disp
+    return addr
 
 
 def show_registers():
@@ -60,248 +84,186 @@ def show_registers():
     for reg_id, value in registers.items():
         reg_name = md.reg_name(reg_id)
         print(f"{reg_name}: 0x{value:x}")
+    for flag, val in flags.items():
+        print(f"{flag}: {val}")
+
 
 def memory_dump(start, size):
-    print(f"Memory dump from 0x{start:x} to 0x{start+size:x}:")
+    print(f"Memory dump from 0x{start:x} to 0x{start + size:x}:")
     for i in range(start, start + size, 16):
-        chunk = memory[i:i+16]
-        hex_chunk = ' '.join(f"{byte:02x}" for byte in chunk)
+        chunk = memory[i : i + 16]
+        hex_chunk = " ".join(f"{byte:02x}" for byte in chunk)
         print(f"0x{i:08x}: {hex_chunk}")
 
 
+# Fake return address to detect main function end
+write_mem(56, 0xFFFFFFFFFFFFFFFF, 8)
+registers[X86_REG_RSP] -= 8
+
+# -----------------------
+# Emulator Loop
+# -----------------------
+
 while registers[X86_REG_RIP] < code_length:
+    offset = registers[X86_REG_RIP]
+    insn = next(md.disasm(code_bytes[offset : offset + 15], vma_address + offset))
 
-    address = registers[X86_REG_RIP]
+    print(f"0x{insn.address:x}:\t{insn.mnemonic}\t{insn.op_str}")
 
-    instruction = next(md.disasm(code_bytes[address:address + 15], address))
-    mnemonic = instruction.mnemonic
-    operands = instruction.operands
+    mnemonic = insn.mnemonic
+    ops = insn.operands
 
-    print(f"0x{address + vma_address:x}:\t{mnemonic}\t{instruction.op_str}")
+    # -------------------------------------------------
+    # MOV
+    # -------------------------------------------------
+    if mnemonic == "mov":
+        if ops[0].type == X86_OP_REG and ops[1].type == X86_OP_REG:
+            registers[ops[0].reg] = registers[ops[1].reg]
 
+        elif ops[0].type == X86_OP_REG and ops[1].type == X86_OP_IMM:
+            registers[ops[0].reg] = ops[1].imm
 
-    if mnemonic == "push":
-        if operands[0].type == X86_OP_REG:
-            reg_id = operands[0].reg
-            value = registers.get(reg_id, 0)
-            registers[X86_REG_RSP] -= 8
-            memory[registers[X86_REG_RSP]:registers[X86_REG_RSP]+8] = value.to_bytes(8, byteorder='little')
-        elif operands[0].type == X86_OP_IMM:
-            imm_value = operands[0].imm
-            registers[X86_REG_RSP] -= 8
-            print(f"Calculated memory address for push: 0x{registers[X86_REG_RSP]:x}")
-            memory[registers[X86_REG_RSP]:registers[X86_REG_RSP]+8] = imm_value.to_bytes(8, byteorder='little')
+        elif ops[0].type == X86_OP_REG and ops[1].type == X86_OP_MEM:
+            addr = compute_mem_address(ops[1].mem)
+            size = ops[0].size
+            registers[ops[0].reg] = read_mem(addr, size)
+
+        elif ops[0].type == X86_OP_MEM and ops[1].type == X86_OP_REG:
+            addr = compute_mem_address(ops[0].mem)
+            size = ops[1].size
+            write_mem(addr, registers[ops[1].reg], size)
+        elif ops[0].type == X86_OP_MEM and ops[1].type == X86_OP_IMM:
+            addr = compute_mem_address(ops[0].mem)
+            size = ops[0].size
+            write_mem(addr, ops[1].imm, size)
+
+    # -------------------------------------------------
+    # PUSH
+    # -------------------------------------------------
+    elif mnemonic == "push":
+        registers[X86_REG_RSP] -= 8
+
+        if registers[X86_REG_RSP] < 0:
+            raise Exception("Stack overflow")
+
+        if ops[0].type == X86_OP_REG:
+            value = registers[ops[0].reg]
         else:
-            print("Unsupported push operand type.")
-    
-    elif mnemonic == "mov":
-        if operands[0].type == X86_OP_REG and operands[1].type == X86_OP_REG:
-            dest_id = operands[0].reg
-            src_id = operands[1].reg
-            registers[dest_id] = registers[src_id]
-        elif operands[0].type == X86_OP_REG and operands[1].type == X86_OP_IMM:
-            dest_id = operands[0].reg
-            imm_value = operands[1].imm
-            registers[dest_id] = imm_value
-        elif operands[0].type == X86_OP_MEM and operands[1].type == X86_OP_IMM:
-            mem_op = operands[0].mem
-            imm_value = operands[1].imm
-            mem_address = 0
-            if mem_op.base != 0:
-                mem_address += registers.get(mem_op.base, 0)
-            if mem_op.index != 0:
-                mem_address += registers.get(mem_op.index, 0) * mem_op.scale
-            mem_address += mem_op.disp
-            memory[mem_address:mem_address+4] = imm_value.to_bytes(4, byteorder='little')
-        elif operands[0].type == X86_OP_REG and operands[1].type == X86_OP_MEM:
-            dest_id = operands[0].reg
-            mem_op = operands[1].mem
-            mem_address = 0
-            if mem_op.base != 0:
-                mem_address += registers.get(mem_op.base, 0)
-            if mem_op.index != 0:
-                mem_address += registers.get(mem_op.index, 0) * mem_op.scale
-            mem_address += mem_op.disp
-            value_bytes = memory[mem_address:mem_address+4]
-            value = int.from_bytes(value_bytes, byteorder='little')
-            registers[dest_id] = value
-        elif operands[0].type == X86_OP_MEM and operands[1].type == X86_OP_REG:
-            mem_op = operands[0].mem
-            src_id = operands[1].reg
-            mem_address = 0
-            if mem_op.base != 0:
-                mem_address += registers.get(mem_op.base, 0)
-            if mem_op.index != 0:
-                mem_address += registers.get(mem_op.index, 0) * mem_op.scale
-            mem_address += mem_op.disp
-            value = registers.get(src_id, 0)
-            memory[mem_address:mem_address+8] = value.to_bytes(8, byteorder='little')
-        
+            value = ops[0].imm
+
+        write_mem(registers[X86_REG_RSP], value, 8)
+
+    # -------------------------------------------------
+    # POP
+    # -------------------------------------------------
+    elif mnemonic == "pop":
+        if registers[X86_REG_RSP] + 8 > len(memory):
+            raise Exception("Stack underflow")
+
+        value = read_mem(registers[X86_REG_RSP], 8)
+
+        if ops[0].type == X86_OP_REG:
+            registers[ops[0].reg] = value
+
+        registers[X86_REG_RSP] += 8
+
+    # -------------------------------------------------
+    # ADD
+    # -------------------------------------------------
+    elif mnemonic == "add":
+        if ops[0].type == X86_OP_REG:
+            if ops[1].type == X86_OP_REG:
+                registers[ops[0].reg] += registers[ops[1].reg]
+            else:
+                registers[ops[0].reg] += ops[1].imm
+
+        elif ops[0].type == X86_OP_MEM:
+            addr = compute_mem_address(ops[0].mem)
+            size = ops[0].size
+            value = read_mem(addr, size)
+
+            if ops[1].type == X86_OP_REG:
+                value += registers[ops[1].reg]
+            else:
+                value += ops[1].imm
+
+            write_mem(addr, value, size)
         else:
-            print("Unsupported mov operand type.")
-        show_registers()
-        memory_dump(0, 64)
-    
+            raise Exception("Unsupported ADD operand types")
+
+    # -------------------------------------------------
+    # SUB
+    # -------------------------------------------------
+    elif mnemonic == "sub":
+        if ops[1].type == X86_OP_REG:
+            registers[ops[0].reg] -= registers[ops[1].reg]
+        else:
+            registers[ops[0].reg] -= ops[1].imm
+
+    # -------------------------------------------------
+    # CMP
+    # -------------------------------------------------
+    elif mnemonic == "cmp":
+        if ops[0].type == X86_OP_REG:
+            left = registers[ops[0].reg]
+        else:
+            left = read_mem(compute_mem_address(ops[0].mem), ops[0].size)
+
+        if ops[1].type == X86_OP_REG:
+            right = registers[ops[1].reg]
+        else:
+            right = ops[1].imm
+
+        print(f"Comparing {left} and {right}")
+
+        flags["ZF"] = int(left == right)
+        flags["SF"] = int(left < right)
+
+    # -------------------------------------------------
+    # JMP
+    # -------------------------------------------------
     elif mnemonic == "jmp":
-        if operands[0].type == X86_OP_IMM:
-            registers[X86_REG_RIP] = operands[0].imm
-            n_jumps += 1
+        # Convert virtual address → offset inside .text
+        registers[X86_REG_RIP] = ops[0].imm - vma_address
+        continue
+
+    # -------------------------------------------------
+    # JLE
+    # -------------------------------------------------
+    elif mnemonic == "jle":
+        if flags["ZF"] == 1 or flags["SF"] == 1:
+            registers[X86_REG_RIP] = ops[0].imm - vma_address
             continue
 
-    elif mnemonic == "add":
-        if operands[0].type == X86_OP_REG and operands[1].type == X86_OP_REG:
-            dest_id = operands[0].reg
-            src_id = operands[1].reg
-            registers[dest_id] += registers[src_id]
-        elif operands[0].type == X86_OP_REG and operands[1].type == X86_OP_IMM:
-            dest_id = operands[0].reg
-            imm_value = operands[1].imm
-            registers[dest_id] += imm_value
-        elif operands[0].type == X86_OP_MEM and operands[1].type == X86_OP_IMM:
-            mem_op = operands[0].mem
-            imm_value = operands[1].imm
-            mem_address = 0
-            if mem_op.base != 0:
-                mem_address += registers.get(mem_op.base, 0)
-            if mem_op.index != 0:
-                mem_address += registers.get(mem_op.index, 0) * mem_op.scale
-            mem_address += mem_op.disp
-            value_bytes = memory[mem_address:mem_address+8]
-            value = int.from_bytes(value_bytes, byteorder='little')
-            result = value + imm_value
-            memory[mem_address:mem_address+8] = result.to_bytes(8, byteorder='little')
-        else:
-            print("Unsupported add operand type.")
-
-    elif mnemonic == "sub":
-        if operands[0].type == X86_OP_REG and operands[1].type == X86_OP_REG:
-            dest_id = operands[0].reg
-            src_id = operands[1].reg
-            registers[dest_id] -= registers[src_id]
-        elif operands[0].type == X86_OP_REG and operands[1].type == X86_OP_IMM:
-            dest_id = operands[0].reg
-            imm_value = operands[1].imm
-            registers[dest_id] -= imm_value
-        else:
-            print("Unsupported sub operand type.")
-
-    elif mnemonic == "cmp":
-        if operands[0].type == X86_OP_REG and operands[1].type == X86_OP_REG:
-            reg1_id = operands[0].reg
-            reg2_id = operands[1].reg
-            print("Comparing values : 0x%d and 0x%d" % (registers[reg1_id], registers[reg2_id]))
-            if registers[reg1_id] < registers[reg2_id]:
-                flags['SF'] = 1
-            elif registers[reg1_id] > registers[reg2_id]:
-                flags['SF'] = 0
-            else:
-                flags['ZF'] = 1
-        elif operands[0].type == X86_OP_REG and operands[1].type == X86_OP_IMM:
-            reg_id = operands[0].reg
-            imm_value = operands[1].imm
-            print("Comparing values : 0x%d and 0x%d" % (registers[reg_id], imm_value))
-            if registers[reg_id] < imm_value:
-                flags['SF'] = 1
-            elif registers[reg_id] > imm_value:
-                flags['SF'] = 0
-            else:
-                flags['ZF'] = 1
-        elif operands[0].type == X86_OP_MEM and operands[1].type == X86_OP_IMM:
-            mem_op = operands[0].mem
-            imm_value = operands[1].imm
-            
-            mem_address = 0
-            if mem_op.base != 0:
-                mem_address += registers.get(mem_op.base, 0)
-            if mem_op.index != 0:
-                mem_address += registers.get(mem_op.index, 0) * mem_op.scale
-            mem_address += mem_op.disp
-            value_bytes = memory[mem_address:mem_address+4]
-            value = int.from_bytes(value_bytes, byteorder='little')
-            print("Comparing memory value 0x%d at address 0x%x with immediate value 0x%d" % (value, mem_address, imm_value))
-            if value < imm_value:
-                flags['SF'] = 1
-            elif value > imm_value:
-                flags['SF'] = 0
-            else:
-                flags['ZF'] = 1
-        elif operands[0].type == X86_OP_MEM and operands[1].type == X86_OP_REG:
-            mem_op = operands[0].mem
-            reg_id = operands[1].reg
-            mem_address = 0
-            if mem_op.base != 0:
-                mem_address += registers.get(mem_op.base, 0)
-            if mem_op.index != 0:
-                mem_address += registers.get(mem_op.index, 0) * mem_op.scale
-            mem_address += mem_op.disp
-            value_bytes = memory[mem_address:mem_address+8]
-            value = int.from_bytes(value_bytes, byteorder='little')
-            if value < registers[reg_id]:
-                flags['SF'] = 1
-            elif value > registers[reg_id]:
-                flags['SF'] = 0
-            else:
-                flags['ZF'] = 1
-        elif operands[0].type == X86_OP_REG and operands[1].type == X86_OP_MEM:
-            reg_id = operands[0].reg
-            mem_op = operands[1].mem
-            mem_address = 0
-            if mem_op.base != 0:
-                mem_address += registers.get(mem_op.base, 0)
-            if mem_op.index != 0:
-                mem_address += registers.get(mem_op.index, 0) * mem_op.scale
-            mem_address += mem_op.disp
-            value_bytes = memory[mem_address:mem_address+8]
-            value = int.from_bytes(value_bytes, byteorder='little')
-            if registers[reg_id] < value:
-                flags['SF'] = 1
-            elif registers[reg_id] > value:
-                flags['SF'] = 0
-            else:
-                flags['ZF'] = 1
-        else:
-            print("Unsupported cmp operand type.")
-
-
-    elif mnemonic == "jle":
-        if operands[0].type == X86_OP_IMM:
-            if flags['ZF'] == 1 or flags['SF'] == 1:
-                registers[X86_REG_RIP] = operands[0].imm
-                n_jumps += 1
-                continue
-        else:
-            print("Unsupported jle operand type.")
-
+    # -------------------------------------------------
+    # SYSCALL
+    # -------------------------------------------------
     elif mnemonic == "syscall":
         if registers[X86_REG_RAX] == 60:
             break
         else:
-            print("Unsupported syscall number:", registers[X86_REG_RAX])
+            raise Exception(f"Unsupported syscall {registers[X86_REG_RAX]}")
 
-    elif mnemonic == "pop":
-        if registers[X86_REG_RSP] < 64000:
-            value_bytes = memory[registers[X86_REG_RSP]:registers[X86_REG_RSP]+8]
-            value = int.from_bytes(value_bytes, byteorder='little')
-            if operands[0].type == X86_OP_REG:
-                reg_id = operands[0].reg
-                registers[reg_id] = value
-            else:
-                print("Unsupported pop operand type.")
-            registers[X86_REG_RSP] += 8
-        else:
-            print("Stack underflow on pop.")
-
+    # -------------------------------------------------
+    # RET
+    # -------------------------------------------------
     elif mnemonic == "ret":
-        break
+        print(f"Return address read = 0x{read_mem(registers[X86_REG_RSP], 8):x}")
+        #                                                   0xffffffffffbfefff
+        if read_mem(registers[X86_REG_RSP], 8) == 0xFFFFFFFFFFFFFFFF:
+            print("Value in RAX (return value):", registers[X86_REG_RAX])
+            break
+        else:
+            registers[X86_REG_RIP] = read_mem(registers[X86_REG_RSP], 8)
+            registers[X86_REG_RSP] += 8
+            continue
 
+    show_registers()
+    memory_dump(0, 64)
+    # Advance RIP (offset)
+    registers[X86_REG_RIP] += insn.size
+    # input("Press Enter to continue...")
 
-    registers[X86_REG_RIP] += instruction.size
-
-
-
-
-show_registers()
-print("Memory (stack):", memory)
-print("Number of jumps executed:", n_jumps)
-
-
+print("\nFinal Registers:")
+for reg, val in registers.items():
+    print(f"{md.reg_name(reg)} = 0x{val:x}")
