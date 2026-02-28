@@ -6,7 +6,9 @@ from elftools.elf.elffile import ELFFile
 # Reading ELF file
 # -----------------------
 
-with open("add.bin", "rb") as f:
+unsupported = set()
+
+with open("add2.bin", "rb") as f:
     elffile = ELFFile(f)
     text_section = elffile.get_section_by_name(".text")
     symtable_section = elffile.get_section_by_name(".symtab")
@@ -40,6 +42,7 @@ registers = {
     X86_REG_RDX: 0,
     X86_REG_RDI: 0,
     X86_REG_RSI: 0,
+    X86_REG_EBP: 0
 }
 
 # -----------------------
@@ -237,6 +240,25 @@ while registers[X86_REG_RIP] < code_length:
             registers[ops[0].reg] |= right
 
     # -------------------------------------------------
+    # XOR
+    # -------------------------------------------------
+    elif mnemonic == "xor":
+        if ops[1].type == X86_OP_REG:
+            right = registers[ops[1].reg]
+        elif ops[1].type == X86_OP_MEM:
+            right = read_mem(compute_mem_address(ops[1].mem), ops[1].size)
+        else:
+            right = ops[1].imm
+
+        if ops[0].type == X86_OP_MEM:
+            addr = compute_mem_address(ops[0].mem)
+            size = ops[0].size
+            value = read_mem(addr, size) ^ right
+            write_mem(addr, value, size)
+        else:
+            registers[ops[0].reg] ^= right
+
+    # -------------------------------------------------
     # CMP
     # -------------------------------------------------
     elif mnemonic == "cmp":
@@ -264,10 +286,42 @@ while registers[X86_REG_RIP] < code_length:
         continue
 
     # -------------------------------------------------
+    # JE
+    # -------------------------------------------------
+    elif mnemonic == "je" or mnemonic == "jz":
+        if flags["ZF"] == 1:
+            registers[X86_REG_RIP] = ops[0].imm - vma_address
+            continue
+
+    # -------------------------------------------------
+    # JNE
+    # -------------------------------------------------
+    elif mnemonic == "jne" or mnemonic == "jnz":
+        if flags["ZF"] == 0:
+            registers[X86_REG_RIP] = ops[0].imm - vma_address
+            continue
+
+    # -------------------------------------------------
     # JLE
     # -------------------------------------------------
     elif mnemonic == "jle":
         if flags["ZF"] == 1 or flags["SF"] == 1:
+            registers[X86_REG_RIP] = ops[0].imm - vma_address
+            continue
+
+    # -------------------------------------------------
+    # JGE
+    # -------------------------------------------------
+    elif mnemonic == "jge":
+        if flags["ZF"] == 1 or flags["SF"] == 0:
+            registers[X86_REG_RIP] = ops[0].imm - vma_address
+            continue
+
+    # -------------------------------------------------
+    # JGE
+    # -------------------------------------------------
+    elif mnemonic == "jg":
+        if flags["ZF"] == 0 and flags["SF"] == 0:
             registers[X86_REG_RIP] = ops[0].imm - vma_address
             continue
 
@@ -312,6 +366,10 @@ while registers[X86_REG_RIP] < code_length:
             registers[X86_REG_RSP] += 8
             continue
 
+    else:
+        print("Unsupported instruction:", mnemonic)
+        unsupported.add(mnemonic)
+
     show_registers()
     memory_dump(0, 64)
     # Advance RIP (offset)
@@ -321,3 +379,6 @@ while registers[X86_REG_RIP] < code_length:
 print("\nFinal Registers:")
 for reg, val in registers.items():
     print(f"{md.reg_name(reg)} = 0x{val:x}")
+
+
+print("\nUnsupported instructions encountered:", unsupported)
