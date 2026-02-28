@@ -1,13 +1,12 @@
 from capstone import *
 from capstone.x86 import *
 from elftools.elf.elffile import ELFFile
-from elftools.elf.sections import SymbolTableSection
 
 # -----------------------
 # Reading ELF file
 # -----------------------
 
-with open("add2.bin", "rb") as f:
+with open("add.bin", "rb") as f:
     elffile = ELFFile(f)
     text_section = elffile.get_section_by_name(".text")
     symtable_section = elffile.get_section_by_name(".symtab")
@@ -34,8 +33,7 @@ flags = {
 registers = {
     X86_REG_RSP: len(memory),
     X86_REG_RBP: len(memory),
-    X86_REG_RIP: start_address
-    - vma_address,  # OFFSET inside .text (NOT virtual address)
+    X86_REG_RIP: start_address - vma_address,
     X86_REG_RAX: 0,
     X86_REG_RBX: 0,
     X86_REG_RCX: 0,
@@ -201,6 +199,44 @@ while registers[X86_REG_RIP] < code_length:
             registers[ops[0].reg] -= ops[1].imm
 
     # -------------------------------------------------
+    # AND
+    # -------------------------------------------------
+    elif mnemonic == "and":
+        if ops[1].type == X86_OP_REG:
+            right = registers[ops[1].reg]
+        elif ops[1].type == X86_OP_MEM:
+            right = read_mem(compute_mem_address(ops[1].mem), ops[1].size)
+        else:
+            right = ops[1].imm
+
+        if ops[0].type == X86_OP_MEM:
+            addr = compute_mem_address(ops[0].mem)
+            size = ops[0].size
+            value = read_mem(addr, size) & right
+            write_mem(addr, value, size)
+        else:
+            registers[ops[0].reg] &= right
+
+    # -------------------------------------------------
+    # OR
+    # -------------------------------------------------
+    elif mnemonic == "or":
+        if ops[1].type == X86_OP_REG:
+            right = registers[ops[1].reg]
+        elif ops[1].type == X86_OP_MEM:
+            right = read_mem(compute_mem_address(ops[1].mem), ops[1].size)
+        else:
+            right = ops[1].imm
+
+        if ops[0].type == X86_OP_MEM:
+            addr = compute_mem_address(ops[0].mem)
+            size = ops[0].size
+            value = read_mem(addr, size) | right
+            write_mem(addr, value, size)
+        else:
+            registers[ops[0].reg] |= right
+
+    # -------------------------------------------------
     # CMP
     # -------------------------------------------------
     elif mnemonic == "cmp":
@@ -234,6 +270,24 @@ while registers[X86_REG_RIP] < code_length:
         if flags["ZF"] == 1 or flags["SF"] == 1:
             registers[X86_REG_RIP] = ops[0].imm - vma_address
             continue
+
+    # -------------------------------------------------
+    # CALL
+    # -------------------------------------------------
+    elif mnemonic == "call":
+        registers[X86_REG_RSP] -= 8
+        write_mem(registers[X86_REG_RSP], registers[X86_REG_RIP] + insn.size, 8)
+        registers[X86_REG_RIP] = ops[0].imm - vma_address
+        continue
+
+    # -------------------------------------------------
+    # SYSCALL
+    # -------------------------------------------------
+    elif mnemonic == "syscall":
+        if registers[X86_REG_RAX] == 60:
+            break
+        else:
+            raise Exception(f"Unsupported syscall {registers[X86_REG_RAX]}")
 
     # -------------------------------------------------
     # SYSCALL
