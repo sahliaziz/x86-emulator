@@ -200,6 +200,30 @@ while registers[X86_REG_RIP] < code_length:
             registers[ops[0].reg] -= registers[ops[1].reg]
         else:
             registers[ops[0].reg] -= ops[1].imm
+    
+    # -------------------------------------------------
+    # DEC
+    # -------------------------------------------------
+    elif mnemonic == "dec":
+        if ops[0].type == X86_OP_REG:
+            registers[ops[0].reg] -= 1
+        elif ops[0].type == X86_OP_MEM:
+            addr = compute_mem_address(ops[0].mem)
+            size = ops[0].size
+            value = read_mem(addr, size) - 1
+            write_mem(addr, value, size)
+
+    # -------------------------------------------------
+    # INC
+    # -------------------------------------------------
+    elif mnemonic == "inc":
+        if ops[0].type == X86_OP_REG:
+            registers[ops[0].reg] += 1
+        elif ops[0].type == X86_OP_MEM:
+            addr = compute_mem_address(ops[0].mem)
+            size = ops[0].size
+            value = read_mem(addr, size) + 1
+            write_mem(addr, value, size)
 
     # -------------------------------------------------
     # AND
