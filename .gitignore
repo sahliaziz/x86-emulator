@@ -12,3 +12,4 @@ wheels/
 *.s
 *.c
 *.txt
+Makefile

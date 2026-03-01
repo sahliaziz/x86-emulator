@@ -8,7 +8,7 @@ from elftools.elf.elffile import ELFFile
 
 unsupported = set()
 
-with open("add2.bin", "rb") as f:
+with open("fib.bin", "rb") as f:
     elffile = ELFFile(f)
     text_section = elffile.get_section_by_name(".text")
     symtable_section = elffile.get_section_by_name(".symtab")
@@ -293,6 +293,8 @@ while registers[X86_REG_RIP] < code_length:
 
         if ops[1].type == X86_OP_REG:
             right = registers[ops[1].reg]
+        elif ops[1].type == X86_OP_MEM:
+            right = read_mem(compute_mem_address(ops[1].mem), ops[1].size)
         else:
             right = ops[1].imm
 
@@ -322,6 +324,14 @@ while registers[X86_REG_RIP] < code_length:
     # -------------------------------------------------
     elif mnemonic == "jne" or mnemonic == "jnz":
         if flags["ZF"] == 0:
+            registers[X86_REG_RIP] = ops[0].imm - vma_address
+            continue
+
+    # -------------------------------------------------
+    # JL
+    # -------------------------------------------------
+    elif mnemonic == "jl":
+        if flags["SF"] == 1:
             registers[X86_REG_RIP] = ops[0].imm - vma_address
             continue
 
