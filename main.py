@@ -375,6 +375,14 @@ while registers[X86_REG_RIP] < code_length:
             break
         else:
             raise Exception(f"Unsupported syscall {registers[X86_REG_RAX]}")
+        
+    # -------------------------------------------------
+    # LEAVE
+    # -------------------------------------------------
+    elif mnemonic == "leave":
+        registers[X86_REG_RSP] = registers[X86_REG_RBP]
+        registers[X86_REG_RBP] = read_mem(registers[X86_REG_RSP], 8)
+        registers[X86_REG_RSP] += 8
 
     # -------------------------------------------------
     # RET
