@@ -13,3 +13,5 @@ wheels/
 *.c
 *.txt
 Makefile
+parser.html
+capstone.min.js

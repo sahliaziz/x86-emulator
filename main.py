@@ -8,7 +8,7 @@ from elftools.elf.elffile import ELFFile
 
 unsupported = set()
 
-with open("fib.bin", "rb") as f:
+with open("lib.bin", "rb") as f:
     elffile = ELFFile(f)
     text_section = elffile.get_section_by_name(".text")
     symtable_section = elffile.get_section_by_name(".symtab")
@@ -42,7 +42,18 @@ registers = {
     X86_REG_RDX: 0,
     X86_REG_RDI: 0,
     X86_REG_RSI: 0,
-    X86_REG_EBP: 0
+    X86_REG_EBP: 0,
+    X86_REG_R8D: 0,
+    X86_REG_R9D: 0,
+    X86_REG_ECX: 0,
+    X86_REG_R8: 0,
+    X86_REG_R9: 0,
+    X86_REG_R10: 0,
+    X86_REG_R11: 0,
+    X86_REG_R12: 0,
+    X86_REG_R13: 0,
+    X86_REG_R14: 0,
+    X86_REG_R15: 0,
 }
 
 # -----------------------
@@ -200,7 +211,7 @@ while registers[X86_REG_RIP] < code_length:
             registers[ops[0].reg] -= registers[ops[1].reg]
         else:
             registers[ops[0].reg] -= ops[1].imm
-    
+
     # -------------------------------------------------
     # DEC
     # -------------------------------------------------
@@ -383,9 +394,19 @@ while registers[X86_REG_RIP] < code_length:
     elif mnemonic == "syscall":
         if registers[X86_REG_RAX] == 60:
             break
+        elif registers[X86_REG_RAX] == 1:
+            # write syscall
+            fd = registers[X86_REG_RDI]
+            buf_addr = registers[X86_REG_RSI]
+            count = registers[X86_REG_RDX]
+
+            if fd == 1:
+                output = memory[buf_addr : buf_addr + count].decode("utf-8")
+                print(output, end="")
+                registers[X86_REG_RAX] = count  # Return number of bytes written
         else:
             raise Exception(f"Unsupported syscall {registers[X86_REG_RAX]}")
-        
+
     # -------------------------------------------------
     # LEAVE
     # -------------------------------------------------
