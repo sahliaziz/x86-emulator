@@ -5,6 +5,7 @@ let registers = {};
 let flags = { zf: false, sf: false, cf: false };
 let isRunning = false;
 let buffer = null;
+let textSection = null;
 let vma = 0n; // Virtual Memory Address of the loaded ELF
 
 const outputDiv = document.getElementById("output");
@@ -26,6 +27,51 @@ function getStartAddr(buffer) {
   const dataView = new DataView(buffer.buffer);
   const isLittleEndian = buffer[5] === 1;
   return dataView.getBigUint64(24, isLittleEndian);
+}
+
+function extractTextSection(arrayBuffer) {
+  const dv = new DataView(arrayBuffer);
+  const buffer = new Uint8Array(arrayBuffer);
+
+  // ELF64 Header Constants
+  const shOff = Number(dv.getBigUint64(40, true));
+  const shEntSize = dv.getUint16(58, true);
+  const shNum = dv.getUint16(60, true);
+  const shStrIdx = dv.getUint16(62, true);
+
+  // Get the Section Header String Table (.shstrtab) location
+  const shstrtabOff = Number(
+    dv.getBigUint64(shOff + shStrIdx * shEntSize + 24, true),
+  );
+
+  for (let i = 0; i < shNum; i++) {
+    const off = shOff + i * shEntSize;
+    const nameIdx = dv.getUint32(off, true);
+
+    // Extract section name
+    let name = "";
+    for (let j = shstrtabOff + nameIdx; buffer[j] !== 0; j++) {
+      name += String.fromCharCode(buffer[j]);
+    }
+
+    if (name === ".text") {
+      const sectionOffset = Number(dv.getBigUint64(off + 24, true));
+      const sectionSize = Number(dv.getBigUint64(off + 32, true));
+      const sectionVMA = dv.getBigUint64(off + 16, true);
+
+      return {
+        name: ".text",
+        vma: sectionVMA,
+        offset: sectionOffset,
+        size: sectionSize,
+        // These are the actual instructions for your emulator
+        bytes: buffer.slice(sectionOffset, sectionOffset + sectionSize),
+      };
+    }
+  }
+
+  console.error("Could not find .text section in ELF file.");
+  return null;
 }
 
 // Load ELF file
@@ -54,6 +100,8 @@ fileInput.addEventListener("change", async (event) => {
     if (isValid) {
       vma = getStartAddr(buffer);
       resultText += `Address of _start (Entry Point VMA): 0x${vma.toString(16)}\n`;
+      textSection = extractTextSection(arrayBuffer);
+      console.log("Extracted .text section:", textSection);
     }
 
     outputDiv.textContent = resultText;
@@ -87,23 +135,72 @@ function initRegisters(entryPoint) {
   names.forEach((name) => (registers[name] = 0n));
 
   //registers.rip = BigInt(entryPoint);
-  registers.rsp = BigInt(memorySize - 64); // Stack grows down from the end
+  registers.rsp = BigInt(memorySize); // Stack grows down from the end
   registers.rbp = registers.rsp;
+
+  // Push fake return address for main (to detect end of execution)
+  registers.rsp -= 8n;
+  writeMem64(registers.rsp, 0xFFFFFFFFFFFFFFFFn);
 }
 
 // --- Memory Helpers ---
-function writeMem64(addr, value) {
-  const view = new DataView(memory.buffer);
-  // Simple mapping: we treat the ELF VMA as a direct offset into our buffer for this demo
-  // In a real emulator, you'd have a page table/mapping logic.
-  const offset = Number(addr & 0xffffn);
-  view.setBigUint64(offset, BigInt(value), true); // Little Endian
+function writeMem64(addr, value, size = 8) {
+  const numAddr = Number(addr);
+  
+  // Bounds checking (matching Python logic)
+  if (numAddr < 0 || numAddr + size > memorySize) {
+    throw new Error(`Invalid memory write at 0x${numAddr.toString(16)}: writing ${size} bytes (memory size: ${memorySize})`);
+  }
+  
+  const bigValue = BigInt(value);
+  
+  // Write bytes as little-endian
+  for (let i = 0; i < size; i++) {
+    memory[numAddr + i] = Number((bigValue >> BigInt(i * 8)) & 0xFFn);
+  }
 }
 
-function readMem64(addr) {
-  const view = new DataView(memory.buffer);
-  const offset = Number(addr & 0xffffn);
-  return view.getBigUint64(offset, true);
+function readMem64(addr, size = 8) {
+  const numAddr = Number(addr);
+  
+  // Bounds checking (matching Python logic)
+  if (numAddr < 0 || numAddr + size > memorySize) {
+    throw new Error(`Invalid memory read at 0x${numAddr.toString(16)}: reading ${size} bytes (memory size: ${memorySize})`);
+  }
+  
+  // Read bytes as little-endian integer
+  let value = 0n;
+  for (let i = 0; i < size; i++) {
+    value |= BigInt(memory[numAddr + i]) << BigInt(i * 8);
+  }
+  
+  return value;
+}
+
+function dumpMemory(startAddr = 0, length = 256) {
+  const numStart = Number(startAddr);
+  
+  if (numStart < 0 || numStart >= memorySize) {
+    throw new Error(`Invalid memory dump start address: 0x${numStart.toString(16)}`);
+  }
+  
+  const endAddr = Math.min(numStart + length, memorySize);
+  let dump = `Memory dump from 0x${numStart.toString(16)} to 0x${endAddr.toString(16)}:\n`;
+  
+  for (let i = numStart; i < endAddr; i += 16) {
+    let line = `0x${i.toString(16).padStart(8, '0')}: `;
+    let ascii = '';
+    
+    for (let j = 0; j < 16 && i + j < endAddr; j++) {
+      const byte = memory[i + j];
+      line += byte.toString(16).padStart(2, '0') + ' ';
+      ascii += String.fromCharCode(byte >= 32 && byte < 127 ? byte : 46); // 46 is '.'
+    }
+    
+    dump += line.padEnd(48, ' ') + '  ' + ascii + '\n';
+  }
+  
+  return dump;
 }
 
 // --- UI Logic ---
@@ -136,6 +233,7 @@ async function runEmulator() {
 
   // Initialize Capstone
   const d = new cs.Capstone(cs.ARCH_X86, cs.MODE_64);
+  d.option(cs.OPT_DETAIL, true);
 
   log("--- Starting Emulator ---");
   isRunning = true;
@@ -143,26 +241,18 @@ async function runEmulator() {
   while (isRunning) {
     // 1. Fetch
     const ripIdx = Number(registers.rip);
-    if (ripIdx >= buffer.length) {
+    if (ripIdx >= textSection.size) {
       log("RIP out of bounds. Stopping.");
+      log(`RIP: 0x${registers.rip.toString(16)}, Text Section Size: ${textSection.size}`);
       break;
     }
 
     // 2. Decode (1 instruction at a time)
-    const instructions = d.disasm(buffer.slice(0x1000), Number(vma));
+    const instructions = d.disasm(textSection.bytes.slice(ripIdx, ripIdx + 15), Number(textSection.vma) + ripIdx);
     if (instructions.length === 0) {
       log(`Failed to disassemble at 0x${registers.rip.toString(16)}`);
       break;
     }
-
-    instructions.forEach(function (instr) {
-      console.log(
-        "0x%s:\t%s\t%s",
-        instr.address.toString(16),
-        instr.mnemonic,
-        instr.op_str,
-      );
-    });
 
     const insn = instructions[0];
     log(`0x${insn.address.toString(16)}: ${insn.mnemonic} ${insn.op_str}`);
@@ -172,13 +262,15 @@ async function runEmulator() {
     let jumped = false;
 
     // 3. Execute
-    const ops = insn.detail.operands;
+    const ops = insn.detail.op;
+
+    console.log("Instruction details:", insn);
 
     // Helper to get operand value
     const getVal = (op) => {
-      if (op.type === cs.x86.OP_REG) return registers[d.reg_name(op.reg)];
-      if (op.type === cs.x86.OP_IMM) return BigInt(op.imm);
-      if (op.type === cs.x86.OP_MEM) return readMem64(BigInt(op.mem.disp)); // Simplified
+      if (op.type === cs.OP_REG) return registers[d.reg_name(op.reg)];
+      if (op.type === cs.OP_IMM) return BigInt(op.imm);
+      if (op.type === cs.OP_MEM) return readMem64(BigInt(op.mem.disp)); // Simplified
       return 0n;
     };
 
@@ -212,25 +304,55 @@ async function runEmulator() {
       case "cmp":
         const v1 = getVal(ops[0]);
         const v2 = getVal(ops[1]);
+        log(`Comparing 0x${v1.toString(16)} and 0x${v2.toString(16)}`);
         flags.zf = v1 === v2;
         flags.sf = v1 < v2;
+        isRunning = false; // Stop after cmp for demo purposes
         break;
 
       case "jmp":
-        registers.rip = getVal(ops[0]);
+        registers.rip = getVal(ops[0]) - vma;
         jumped = true;
         break;
 
       case "je":
         if (flags.zf) {
-          registers.rip = getVal(ops[0]);
+          registers.rip = getVal(ops[0]) - vma;
+          jumped = true;
+        }
+        break;
+
+      case "jl":
+        if (flags.sf) {
+          registers.rip = getVal(ops[0]) - vma;
+          jumped = true;
+        }
+        break;
+
+      case "jle":
+        if (flags.sf || flags.zf) {
+          registers.rip = getVal(ops[0]) - vma;
           jumped = true;
         }
         break;
 
       case "jne":
         if (!flags.zf) {
-          registers.rip = getVal(ops[0]);
+          registers.rip = getVal(ops[0]) - vma;
+          jumped = true;
+        }
+        break;
+
+      case "jg":
+        if (!flags.sf && !flags.zf) {
+          registers.rip = getVal(ops[0]) - vma;
+          jumped = true;
+        }
+        break;
+
+      case "jge":
+        if (!flags.sf) {
+          registers.rip = getVal(ops[0]) - vma;
           jumped = true;
         }
         break;
@@ -243,8 +365,16 @@ async function runEmulator() {
         break;
 
       case "ret":
+        if (readMem64(registers.rsp) == 0xFFFFFFFFFFFFFFFFn) {
+          log("Reached end of main. Exiting.");
+          log("Return value (RAX): " + registers.rax);
+          isRunning = false;
+          break;
+        }
+        log("Returning to 0x" + readMem64(registers.rsp).toString(16));
         registers.rip = readMem64(registers.rsp);
         registers.rsp += 8n;
+        isRunning = false;
         jumped = true;
         break;
 
@@ -269,7 +399,7 @@ async function runEmulator() {
     updateUI();
 
     // Safety break for very long loops in browser
-    if (ripIdx > 10000) isRunning = false;
+    if (ripIdx > 100) isRunning = false;
 
     // Optional: Use await new Promise(r => setTimeout(r, 10)) for "slow motion"
   }
