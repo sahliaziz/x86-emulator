@@ -1,17 +1,5 @@
-# Python-generated files
-__pycache__/
-*.py[oc]
-build/
-dist/
-wheels/
-*.egg-info
-
-# Virtual environments
 .venv
 *.bin
 *.s
 *.c
 *.txt
-Makefile
-parser.html
-capstone.min.js

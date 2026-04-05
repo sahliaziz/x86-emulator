@@ -1,22 +1,24 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <title>x86_64 Web Emulator</title>
-    <script src="capstone.min.js"></script>
-    <link rel="stylesheet" href="style.css" />
-  </head>
-  <body>
-    <h2>x86_64 Instruction Emulator</h2>
-    <h3>Select ELF File</h3>
-    <input type="file" id="fileInput" />
-    <div id="fileInfo">Waiting for file...</div>
-    <button onclick="runEmulator()">Run Simulation</button>
+    <head>
+        <meta charset="UTF-8" />
+        <title>x86_64 Web Emulator</title>
+        <script src="https://cdn.jsdelivr.net/npm/@alexaltea/capstone-js@3.0.5/dist/capstone.min.js"></script>
+        <link rel="stylesheet" href="style.css" />
+    </head>
+    <body>
+        <h2>x86_64 Instruction Emulator</h2>
+        <h3>Select ELF File</h3>
+        <input type="file" id="fileInput" />
+        <div id="fileInfo">Waiting for file...</div>
+        <button onclick="runEmulator()">Run Simulation</button>
 
-    <div id="output">Simulation logs will appear here...</div>
+        <div id="output">Simulation logs will appear here...</div>
 
-    <div class="reg-grid" id="regDisplay"></div>
+        <div class="reg-grid" id="regDisplay"></div>
 
-    <script src="emulator.js"></script>
-  </body>
+        <script src="elf.js"></script>
+        <script src="memory.js"></script>
+        <script src="emulator.js"></script>
+    </body>
 </html>
