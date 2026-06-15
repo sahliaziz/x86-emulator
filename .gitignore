@@ -4,3 +4,4 @@
 *.s
 *.c
 *.txt
+.prettierrc
